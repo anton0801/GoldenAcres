@@ -1,0 +1,58 @@
+# ===========================================================================
+# public/ — the only directory the web server may serve from.
+#
+# Works in both deployment styles:
+#   A) document root = public_html, with the root .htaccess rewriting here
+#   B) document root pointed straight at this public/ directory
+# ===========================================================================
+
+Options -Indexes -MultiViews
+
+# The parent .htaccess denies every .php file in the tree. This is the one
+# script that is allowed to run. Without this grant the API answers 403.
+<Files "index.php">
+    <IfModule mod_authz_core.c>
+        Require all granted
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Allow from all
+    </IfModule>
+</Files>
+
+# Nothing else here is servable, whatever ends up in this directory.
+<FilesMatch "^(?!index\.php$).*\.(php|env|sql|md|log|ini|lock|bak|sh)$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
+
+<IfModule mod_rewrite.c>
+RewriteEngine On
+
+# Force HTTPS (relevant in layout B, where the root .htaccess is not used).
+RewriteCond %{HTTPS} !=on
+RewriteCond %{HTTP:X-Forwarded-Proto} !=https
+RewriteCond %{HTTP_HOST} !^(localhost|127\.0\.0\.1|\[::1\])(:[0-9]+)?$ [NC]
+RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+
+# Authorization is not passed to PHP under CGI/FastCGI/LiteSpeed.
+RewriteCond %{HTTP:Authorization} .
+RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
+# Front controller.
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^ index.php [QSA,L]
+</IfModule>
+
+<IfModule mod_headers.c>
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set X-Frame-Options "DENY"
+    Header always set Referrer-Policy "no-referrer"
+    Header always unset X-Powered-By
+</IfModule>

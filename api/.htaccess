@@ -1,0 +1,130 @@
+# ===========================================================================
+# GoldenAcres API — .htaccess for the DOCUMENT ROOT (public_html)
+#
+# Use this when every server file is uploaded straight into public_html, so
+# the layout is:
+#
+#   public_html/.htaccess          <- this file
+#   public_html/public/index.php   <- the only script that may be reached
+#   public_html/src/               <- must never be served
+#   public_html/migrations/        <- must never be served
+#   public_html/bin/               <- must never be served
+#   public_html/.env               <- must never be served
+#
+# Two jobs: send every request to public/index.php, and make sure nothing
+# else in this directory can be downloaded.
+#
+# Tested against Apache 2.4 and LiteSpeed (Hostinger). No php_flag /
+# php_value directives are used — those throw a 500 under LiteSpeed and
+# PHP-FPM. The application sets its own ini values in index.php.
+# ===========================================================================
+
+# No directory listings, and no guessing "report" -> "report.php".
+Options -Indexes -MultiViews
+
+# UTF-8 by default for anything served directly.
+AddDefaultCharset UTF-8
+
+# ---------------------------------------------------------------------------
+# 1. Hard denials that do not depend on mod_rewrite.
+#    If the rewrite engine is ever disabled, these still hold.
+# ---------------------------------------------------------------------------
+
+# Dotfiles: .env, .env.example, .gitignore, .htpasswd, ...
+<FilesMatch "^\.">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
+
+# Source, config, database dumps, docs, logs, lockfiles.
+<FilesMatch "\.(env|sql|md|log|ini|lock|bak|old|dist|sh|yml|yaml|json|twig|tpl|swp|save)$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
+
+# The only PHP file that may ever be requested directly is public/index.php.
+# Everything else with a .php extension in this directory is denied here and
+# re-allowed for public/ by public_html/public/.htaccess.
+<FilesMatch "\.php$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
+
+<IfModule mod_rewrite.c>
+RewriteEngine On
+
+# If the API lives in a subfolder, e.g. public_html/api/, uncomment and set:
+# RewriteBase /api/
+# ...and set APP_BASE_PATH=/api in .env
+
+# -------------------------------------------------------------------------
+# 2. Force HTTPS. Bearer tokens must never travel in the clear.
+#    Skipped when a proxy already terminated TLS.
+# -------------------------------------------------------------------------
+RewriteCond %{HTTPS} !=on
+RewriteCond %{HTTP:X-Forwarded-Proto} !=https
+RewriteCond %{HTTP_HOST} !^(localhost|127\.0\.0\.1|\[::1\])(:[0-9]+)?$ [NC]
+RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+
+# -------------------------------------------------------------------------
+# 3. Re-inject the Authorization header.
+#    LiteSpeed and CGI/FastCGI strip it, which would make every
+#    authenticated request fail with 401. The PHP side reads both
+#    HTTP_AUTHORIZATION and REDIRECT_HTTP_AUTHORIZATION.
+# -------------------------------------------------------------------------
+RewriteCond %{HTTP:Authorization} .
+RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
+# -------------------------------------------------------------------------
+# 4. Block the server's internals before any file can be reached.
+#    These run before the front-controller rule on purpose: src/ contains
+#    real files, so -f would otherwise happily serve them.
+# -------------------------------------------------------------------------
+RewriteRule ^(src|migrations|bin|database|deploy|tests|vendor|node_modules)(/|$) - [F,L]
+RewriteRule (^|/)\.(?!well-known/) - [F,L]
+
+# -------------------------------------------------------------------------
+# 5. Front controller. The root and any path that is not a real file or
+#    directory are handled by public/index.php.
+# -------------------------------------------------------------------------
+RewriteRule ^$ public/index.php [L]
+
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^ public/index.php [L]
+</IfModule>
+
+# ---------------------------------------------------------------------------
+# 6. Baseline security headers.
+#    index.php sets these too; repeating them here means they are present
+#    even on an error page produced by the web server itself.
+# ---------------------------------------------------------------------------
+<IfModule mod_headers.c>
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set X-Frame-Options "DENY"
+    Header always set Referrer-Policy "no-referrer"
+    Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    Header unset X-Powered-By
+    Header always unset X-Powered-By
+</IfModule>
+
+# ---------------------------------------------------------------------------
+# 7. Custom error documents so the API answers JSON, not an HTML error page.
+# ---------------------------------------------------------------------------
+ErrorDocument 403 "{\"error\":{\"code\":\"forbidden\",\"message\":\"Not available.\"}}"
+ErrorDocument 404 "{\"error\":{\"code\":\"not_found\",\"message\":\"No endpoint matches this path.\"}}"
